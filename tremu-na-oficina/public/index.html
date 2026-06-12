@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TREMU NA OFICINA</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:1rem}
+    h1{font-size:1.8rem;color:#e94560;letter-spacing:2px;text-align:center;margin:.5rem 0}
+    .sub{color:#aaa;text-align:center;margin-bottom:.8rem;font-size:.85rem}
+    .container{width:100%;max-width:480px}
+    .camara-wrap{position:relative;width:100%;border-radius:14px;overflow:hidden;border:3px solid #e94560;background:#000}
+    #videoEl{width:100%;display:block;transform:scaleX(-1)}
+    #canvasEl{position:absolute;top:0;left:0;width:100%;height:100%;transform:scaleX(-1)}
+    .palavra-display{display:flex;gap:.8rem;justify-content:center;margin:1rem 0;flex-wrap:wrap}
+    .letra-box{width:65px;height:65px;border:3px solid #e94560;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:bold;background:#16213e;transition:all .3s}
+    .acertou{background:#2ecc71!important;border-color:#2ecc71!important}
+    .atual{border-color:#f39c12!important;animation:pulsar .8s infinite alternate}
+    @keyframes pulsar{from{box-shadow:0 0 5px #f39c12}to{box-shadow:0 0 20px #f39c12}}
+    .detetado{background:#16213e;border:2px solid #0f3460;border-radius:12px;padding:.8rem;text-align:center;margin:.5rem 0}
+    .letra-grande{font-size:3rem;font-weight:bold;color:#f39c12;min-height:3.5rem}
+    .conf{font-size:.8rem;color:#aaa}
+    .status{text-align:center;font-size:1rem;margin:.5rem 0;min-height:1.3rem;font-weight:bold}
+    .ok{color:#2ecc71}.erro{color:#e74c3c}
+    .info-letra{background:#0f3460;border-radius:10px;padding:.6rem;text-align:center;margin:.4rem 0;font-size:.9rem}
+    .info-letra b{color:#f39c12;font-size:1.4rem}
+    .score{background:#16213e;border-radius:10px;padding:.7rem;text-align:center;margin:.5rem 0}
+    .score span{font-size:1.8rem;font-weight:bold;color:#e94560;margin-left:.5rem}
+    .btn{background:#e94560;color:#fff;border:none;padding:.6rem 1.3rem;border-radius:8px;cursor:pointer;font-size:.9rem;margin:.3rem}
+    .btn:hover{background:#c73652}
+    .barra-conf{height:8px;background:#0f3460;border-radius:4px;margin:.3rem 0;overflow:hidden}
+    .barra-conf-fill{height:100%;background:#f39c12;border-radius:4px;transition:width .3s}
+    .instrucao{background:#16213e;border-radius:10px;padding:.8rem;margin:.5rem 0;font-size:.82rem;color:#aaa;text-align:center}
+    .instrucao span{color:#e94560;font-weight:bold}
+    .debug{background:#0a0a1a;border-radius:8px;padding:.5rem;font-size:.7rem;color:#555;margin:.3rem 0;text-align:center;display:none}
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1> TREMU NA OFICINA</h1>
+  <p class="sub">🤟 LGP — Língua Gestual Portuguesa</p>
+
+  <div class="camara-wrap">
+    <video id="videoEl" autoplay playsinline></video>
+    <canvas id="canvasEl"></canvas>
+  </div>
+
+  <div class="instrucao">
+    Faz o gesto em <span>LGP</span> à câmara e mantém <span>2 segundos</span>
+  </div>
+
+  <div class="palavra-display" id="display"></div>
+
+  <div class="info-letra">Letra a identificar: <b id="letraAlvo">-</b></div>
+
+  <div class="detetado">
+    <div class="letra-grande" id="letraDetetada">—</div>
+    <div class="barra-conf"><div class="barra-conf-fill" id="barraConf" style="width:0%"></div></div>
+    <div class="conf" id="confTexto">A aguardar mão...</div>
+  </div>
+
+  <div class="debug" id="debug"></div>
+
+  <p class="status" id="status"></p>
+  <div class="score">Pontuação: <span id="score">0</span></div>
+  <div style="text-align:center;margin-top:.5rem">
+    <button class="btn" onclick="novaRonda()">🔄 Nova Palavra</button>
+    <button class="btn" style="background:#0f3460" onclick="toggleDebug()">🔍 Debug</button>
+  </div>
+</div>
+
+<script>
+const PALAVRAS=["BOLA","MESA","CASA","AMOR","GATO","CAMA","PATO","FOGO","ROSA","LOJA","BOCA","DEDO","LIMA","MALA","NATA","SALA","TACO","VACA","ALTO","BELO","COPO","FOTO","GOLA","HORA","ILHA","LAGO","MAPA","RATO","PELE","ZERO"];
+
+let score=0, letraAtual=0, palavra="", bloqueado=false;
+let ultimaLetra="", tempoConfirm=0;
+const TEMPO_CONFIRMAR=2000;
+let debugOn=false;
+
+function toggleDebug(){
+  debugOn=!debugOn;
+  document.getElementById('debug').style.display=debugOn?'block':'none';
+}
+
+// =============================================
+// RECONHECIMENTO LGP - Língua Gestual Portuguesa
+// Baseado no alfabeto da Associação Portuguesa de Surdos
+// =============================================
+function reconhecerLGP(lm) {
+  // Pontos chave MediaPipe:
+  // 0=pulso, 1-4=polegar, 5-8=indicador, 9-12=médio, 13-16=anelar, 17-20=mínimo
+  // tip = topo do dedo: 4,8,12,16,20
+  // pip = segunda junta: 3,7,11,15,19
+  // mcp = base: 2,6,10,14,18
+
+  const p = lm; // atalho
+
+  // --- helpers ---
+  const dist2D = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  const dist3D = (a,b) => Math.hypot(a.x-b.x, a.y-b.y, a.z-b.z);
+
+  // Dedo aberto: tip está claramente acima da pip (y menor = mais alto no ecrã)
+  const aberto = (tip, pip, mcp) => (pip.y - tip.y) > (pip.y - mcp.y) * 0.3;
+  // Dedo fechado: tip está abaixo ou próximo da mcp
+  const fechado = (tip, mcp) => tip.y > mcp.y - 0.02;
+  // Dedo dobrado a meio (curvo)
+  const curvo = (tip, pip, mcp) => {
+    const ext = aberto(tip,pip,mcp);
+    const fch = fechado(tip,mcp);
+    return !ext && !fch;
+  };
+
+  const iA = aberto(p[8],p[7],p[6]);
+  const mA = aberto(p[12],p[11],p[10]);
+  const rA = aberto(p[16],p[15],p[14]);
+  const pA = aberto(p[20],p[19],p[18]);
+
+  const iF = fechado(p[8],p[6]);
+  const mF = fechado(p[12],p[10]);
+  const rF = fechado(p[16],p[14]);
+  const pF = fechado(p[20],p[18]);
+
+  const iC = curvo(p[8],p[7],p[6]);
+  const mC = curvo(p[12],p[11],p[10]);
+  const rC = curvo(p[16],p[15],p[14]);
+  const pC = curvo(p[20],p[19],p[18]);
+
+  // Polegar: aberto = afastado do indicador
+  const tA = dist2D(p[4],p[6]) > 0.09;
+  const tF = dist2D(p[4],p[6]) < 0.06;
+
+  // Toque do polegar com outros dedos
+  const tToca8  = dist3D(p[4],p[8])  < 0.07; // polegar toca indicador
+  const tToca12 = dist3D(p[4],p[12]) < 0.07; // polegar toca médio
+  const tToca16 = dist3D(p[4],p[16]) < 0.07; // polegar toca anelar
+  const tToca20 = dist3D(p[4],p[20]) < 0.07; // polegar toca mínimo
+
+  // Orientação da mão
+  const maoPalmaCima = p[0].y > p[9].y; // pulso abaixo do médio = palma para cima
+
+  // Indicador aponta: tip muito acima de mcp
+  const iAponta = (p[5].y - p[8].y) > 0.12;
+
+  // Dois dedos cruzados
+  const iMcruzados = iA && mA && dist2D(p[8],p[12]) < 0.04;
+
+  let info = `iA:${+iA} mA:${+mA} rA:${+rA} pA:${+pA} | iF:${+iF} mF:${+mF} rF:${+rF} pF:${+pF} | tA:${+tA} tF:${+tF} | t8:${+tToca8} t12:${+tToca12} t16:${+tToca16} t20:${+tToca20}`;
+  if(debugOn) document.getElementById('debug').textContent = info;
+
+  // =============================================
+  // LETRAS LGP — mapeamento baseado na imagem APS
+  // =============================================
+
+  // A — punho fechado, polegar ao lado (não em cima)
+  if(iF && mF && rF && pF && tA) return {letra:'A', conf:0.85};
+
+  // B — 4 dedos abertos juntos, polegar dobrado sobre palma
+  if(iA && mA && rA && pA && tF) return {letra:'B', conf:0.82};
+
+  // C — mão em forma de C, todos os dedos curvos, polegar também curvo
+  if(iC && mC && rC && pC && !tF) return {letra:'C', conf:0.80};
+
+  // D — indicador aponta, médio+anelar+mínimo tocam polegar
+  if(iAponta && tToca12 && mF && rF && pF) return {letra:'D', conf:0.80};
+
+  // E — todos os dedos dobrados, polegar por baixo
+  if(iF && mF && rF && pF && tF) return {letra:'E', conf:0.78};
+
+  // F — polegar toca indicador (formam círculo), outros 3 abertos
+  if(tToca8 && mA && rA && pA) return {letra:'F', conf:0.80};
+
+  // G — indicador aponta para o lado, polegar paralelo
+  if(iAponta && mF && rF && pF && tA && dist2D(p[4],p[8]) < 0.12) return {letra:'G', conf:0.78};
+
+  // H — indicador e médio abertos e paralelos (apontam para o lado)
+  if(iA && mA && rF && pF && !tA) return {letra:'H', conf:0.78};
+
+  // I — só o mínimo levantado, resto fechado
+  if(iF && mF && rF && pA && !pA) return {letra:'I', conf:0.80};
+  if(iF && mF && rF && pF==false && p[20].y < p[18].y) return {letra:'I', conf:0.82};
+
+  // J — mínimo levantado + movimento (aqui só detetamos posição)
+  if(iF && mF && rF && pA && tF) return {letra:'J', conf:0.72};
+
+  // L — polegar e indicador abertos em L, resto fechado
+  if(iAponta && tA && mF && rF && pF) return {letra:'L', conf:0.85};
+
+  // M — 3 dedos (ind+med+anel) dobrados sobre o polegar
+  if(iC && mC && rC && pF && tF) return {letra:'M', conf:0.75};
+
+  // N — indicador e médio dobrados sobre polegar
+  if(iC && mC && rF && pF && tF) return {letra:'N', conf:0.75};
+
+  // O — polegar toca indicador formando O, outros fechados
+  if(tToca8 && mF && rF && pF) return {letra:'O', conf:0.82};
+
+  // P — indicador aponta para baixo, polegar aberto
+  if(!iAponta && p[8].y > p[6].y && mF && rF && pF && tA) return {letra:'P', conf:0.75};
+
+  // R — indicador e médio cruzados
+  if(iMcruzados && rF && pF) return {letra:'R', conf:0.78};
+
+  // S — punho fechado com polegar sobre os dedos
+  if(iF && mF && rF && pF && tToca8) return {letra:'S', conf:0.78};
+
+  // T — polegar entre indicador e médio (polegar toca médio, indicador dobrado)
+  if(tToca12 && iF && mF && rF && pF) return {letra:'T', conf:0.78};
+
+  // U — indicador e médio abertos e juntos, resto fechado
+  if(iA && mA && rF && pF && tF && dist2D(p[8],p[12]) < 0.06) return {letra:'U', conf:0.80};
+
+  // V — indicador e médio abertos em V (afastados), resto fechado
+  if(iA && mA && rF && pF && tF && dist2D(p[8],p[12]) > 0.06) return {letra:'V', conf:0.80};
+
+  // W — indicador, médio e anelar abertos
+  if(iA && mA && rA && pF && tF) return {letra:'W', conf:0.78};
+
+  // X — indicador dobrado em gancho
+  if(iC && mF && rF && pF && tF) return {letra:'X', conf:0.75};
+
+  // Y — polegar e mínimo abertos, resto fechado
+  if(tA && pA && iF && mF && rF) return {letra:'Y', conf:0.80};
+
+  // Z — indicador aponta e faz movimento de Z (aqui só posição)
+  if(iAponta && mF && rF && pF && tF) return {letra:'Z', conf:0.70};
+
+  return {letra:'?', conf:0};
+}
+
+// ===== MEDIAPIPE =====
+const video = document.getElementById('videoEl');
+const canvas = document.getElementById('canvasEl');
+const ctx = canvas.getContext('2d');
+
+const hands = new Hands({locateFile: f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+hands.setOptions({maxNumHands:1, modelComplexity:1, minDetectionConfidence:0.75, minTrackingConfidence:0.75});
+
+hands.onResults(results=>{
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if(results.multiHandLandmarks && results.multiHandLandmarks.length>0){
+    const lm = results.multiHandLandmarks[0];
+    drawConnectors(ctx, lm, HAND_CONNECTIONS, {color:'#f39c12', lineWidth:3});
+    drawLandmarks(ctx, lm, {color:'#e94560', lineWidth:1, radius:4});
+
+    const {letra, conf} = reconhecerLGP(lm);
+    mostrarDetetado(letra, conf);
+
+    if(letra !== '?' && conf >= 0.72 && !bloqueado){
+      if(letra === ultimaLetra){
+        if(Date.now() - tempoConfirm >= TEMPO_CONFIRMAR){
+          verificar(letra);
+          ultimaLetra = "";
+        }
+      } else {
+        ultimaLetra = letra;
+        tempoConfirm = Date.now();
+      }
+    } else if(letra === '?'){
+      ultimaLetra = "";
+    }
+  } else {
+    mostrarDetetado('—', 0);
+    ultimaLetra = "";
+  }
+});
+
+function mostrarDetetado(letra, conf){
+  document.getElementById('letraDetetada').textContent = letra;
+  const pct = Math.round(conf*100);
+  document.getElementById('barraConf').style.width = pct+'%';
+  document.getElementById('confTexto').textContent = conf > 0 ? `Confiança: ${pct}%` : 'Nenhuma mão detetada';
+}
+
+navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}, audio:false}).then(stream=>{
+  video.srcObject = stream;
+  video.onloadedmetadata = () => {
+    const camera = new Camera(video, {onFrame: async()=>{ await hands.send({image:video}); }});
+    camera.start();
+  };
+}).catch(e=>{
+  document.getElementById('status').textContent = '❌ Sem acesso à câmara: '+e.message;
+  document.getElementById('status').className = 'status erro';
+});
+
+// ===== JOGO =====
+function novaRonda(){
+  palavra = PALAVRAS[Math.floor(Math.random()*PALAVRAS.length)];
+  letraAtual = 0; bloqueado = false; ultimaLetra = "";
+  document.getElementById('status').textContent = 'Faz o gesto da letra indicada!';
+  document.getElementById('status').className = 'status';
+  document.getElementById('letraAlvo').textContent = palavra[0];
+  renderDisplay();
+}
+
+function renderDisplay(){
+  const d = document.getElementById('display'); d.innerHTML = '';
+  for(let i=0; i<palavra.length; i++){
+    const b = document.createElement('div'); b.className='letra-box'; b.id='box'+i;
+    if(i < letraAtual){ b.textContent=palavra[i]; b.classList.add('acertou'); }
+    else if(i === letraAtual){ b.textContent='?'; b.classList.add('atual'); }
+    else{ b.textContent='_'; }
+    d.appendChild(b);
+  }
+}
+
+function verificar(letra){
+  if(bloqueado) return;
+  const correta = palavra[letraAtual];
+  const st = document.getElementById('status');
+  const box = document.getElementById('box'+letraAtual);
+  if(letra === correta){
+    box.textContent = correta; box.classList.remove('atual'); box.classList.add('acertou');
+    letraAtual++;
+    if(letraAtual >= palavra.length){
+      score += 10; document.getElementById('score').textContent = score;
+      st.textContent = '🎉 Palavra completa: '+palavra; st.className='status ok';
+      bloqueado = true; setTimeout(novaRonda, 2500);
+    } else {
+      st.textContent = '✅ Certo! Próxima letra...'; st.className='status ok';
+      document.getElementById('letraAlvo').textContent = palavra[letraAtual];
+      renderDisplay();
+    }
+  }
+}
+
+novaRonda();
+</script>
+</body>
+</html>
